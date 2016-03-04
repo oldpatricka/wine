@@ -174,6 +174,7 @@ struct object
 
 enum alg_id
 {
+    ALG_ID_MD5,
     ALG_ID_SHA1,
     ALG_ID_SHA256,
     ALG_ID_SHA384,
@@ -184,6 +185,7 @@ static const struct {
     ULONG hash_length;
     const WCHAR *alg_name;
 } alg_props[] = {
+    /* ALG_ID_MD5    */ { 16, BCRYPT_MD5_ALGORITHM },
     /* ALG_ID_SHA1   */ { 20, BCRYPT_SHA1_ALGORITHM },
     /* ALG_ID_SHA256 */ { 32, BCRYPT_SHA256_ALGORITHM },
     /* ALG_ID_SHA384 */ { 48, BCRYPT_SHA384_ALGORITHM },
@@ -211,6 +213,7 @@ NTSTATUS WINAPI BCryptOpenAlgorithmProvider( BCRYPT_ALG_HANDLE *handle, LPCWSTR 
     }
 
     if (!strcmpW( id, BCRYPT_SHA1_ALGORITHM )) alg_id = ALG_ID_SHA1;
+    else if (!strcmpW( id, BCRYPT_MD5_ALGORITHM )) alg_id = ALG_ID_MD5;
     else if (!strcmpW( id, BCRYPT_SHA256_ALGORITHM )) alg_id = ALG_ID_SHA256;
     else if (!strcmpW( id, BCRYPT_SHA384_ALGORITHM )) alg_id = ALG_ID_SHA384;
     else if (!strcmpW( id, BCRYPT_SHA512_ALGORITHM )) alg_id = ALG_ID_SHA512;
@@ -262,6 +265,7 @@ struct hash
     enum alg_id   alg_id;
     union
     {
+        CC_MD5_CTX    md5_ctx;
         CC_SHA1_CTX   sha1_ctx;
         CC_SHA256_CTX sha256_ctx;
         CC_SHA512_CTX sha512_ctx;
@@ -272,6 +276,9 @@ static NTSTATUS hash_init( struct hash *hash )
 {
     switch (hash->alg_id)
     {
+    case ALG_ID_MD5:
+        CC_MD5_Init( &hash->u.md5_ctx );
+        break;
     case ALG_ID_SHA1:
         CC_SHA1_Init( &hash->u.sha1_ctx );
         break;
@@ -299,6 +306,10 @@ static NTSTATUS hash_update( struct hash *hash, UCHAR *input, ULONG size )
 {
     switch (hash->alg_id)
     {
+    case ALG_ID_MD5:
+        CC_MD5_Update( &hash->u.md5_ctx, input, size );
+        break;
+
     case ALG_ID_SHA1:
         CC_SHA1_Update( &hash->u.sha1_ctx, input, size );
         break;
@@ -326,6 +337,10 @@ static NTSTATUS hash_finish( struct hash *hash, UCHAR *output, ULONG size )
 {
     switch (hash->alg_id)
     {
+    case ALG_ID_MD5:
+        CC_MD5_Final( output, &hash->u.md5_ctx );
+        break;
+
     case ALG_ID_SHA1:
         CC_SHA1_Final( output, &hash->u.sha1_ctx );
         break;
@@ -364,6 +379,9 @@ static NTSTATUS hash_init( struct hash *hash )
 
     switch (hash->alg_id)
     {
+    case ALG_ID_MD5:
+        alg = GNUTLS_DIG_MD5;
+        break;
     case ALG_ID_SHA1:
         alg = GNUTLS_DIG_SHA1;
         break;
@@ -426,6 +444,7 @@ static NTSTATUS hash_finish( struct hash *hash, UCHAR *output, ULONG size )
 }
 #endif
 
+#define OBJECT_LENGTH_MD5       274
 #define OBJECT_LENGTH_SHA1      278
 #define OBJECT_LENGTH_SHA256    286
 #define OBJECT_LENGTH_SHA384    382
@@ -467,6 +486,14 @@ static NTSTATUS get_alg_property( enum alg_id id, const WCHAR *prop, UCHAR *buf,
 
     switch (id)
     {
+    case ALG_ID_MD5:
+        if (!strcmpW( prop, BCRYPT_OBJECT_LENGTH ))
+        {
+            value = OBJECT_LENGTH_MD5;
+            break;
+        }
+        FIXME( "unsupported md5 algorithm property %s\n", debugstr_w(prop) );
+        return STATUS_NOT_IMPLEMENTED;
     case ALG_ID_SHA1:
         if (!strcmpW( prop, BCRYPT_OBJECT_LENGTH ))
         {
@@ -572,9 +599,17 @@ NTSTATUS WINAPI BCryptCreateHash( BCRYPT_ALG_HANDLE algorithm, BCRYPT_HASH_HANDL
     }
 
     if (!alg || alg->hdr.magic != MAGIC_ALG) return STATUS_INVALID_HANDLE;
-    if (object) FIXME( "ignoring object buffer\n" );
 
     if (!(hash = HeapAlloc( GetProcessHeap(), 0, sizeof(*hash) ))) return STATUS_NO_MEMORY;
+
+    if (object) {
+        hash = (BCRYPT_HASH_HANDLE)object;
+    }
+    else {
+        FIXME("Cannot allocate memory for hash context");
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    
     hash->hdr.magic = MAGIC_HASH;
     hash->alg_id    = alg->id;
     if ((status = hash_init( hash )) != STATUS_SUCCESS)
@@ -594,7 +629,7 @@ NTSTATUS WINAPI BCryptDestroyHash( BCRYPT_HASH_HANDLE handle )
     TRACE( "%p\n", handle );
 
     if (!hash || hash->hdr.magic != MAGIC_HASH) return STATUS_INVALID_HANDLE;
-    HeapFree( GetProcessHeap(), 0, hash );
+    //HeapFree( GetProcessHeap(), 1, hash ); //TODO
     return STATUS_SUCCESS;
 }
 
@@ -605,7 +640,7 @@ NTSTATUS WINAPI BCryptHashData( BCRYPT_HASH_HANDLE handle, UCHAR *input, ULONG s
     TRACE( "%p, %p, %u, %08x\n", handle, input, size, flags );
 
     if (!hash || hash->hdr.magic != MAGIC_HASH) return STATUS_INVALID_HANDLE;
-    if (!input) return STATUS_INVALID_PARAMETER;
+    if (!input) return STATUS_SUCCESS; // This is the (undocumented?) windows behavior
 
     return hash_update( hash, input, size );
 }
