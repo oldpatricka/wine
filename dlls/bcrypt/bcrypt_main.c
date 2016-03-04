@@ -263,13 +263,7 @@ struct hash
 {
     struct object hdr;
     enum alg_id   alg_id;
-    union
-    {
-        CC_MD5_CTX    md5_ctx;
-        CC_SHA1_CTX   sha1_ctx;
-        CC_SHA256_CTX sha256_ctx;
-        CC_SHA512_CTX sha512_ctx;
-    } u;
+    void * ctx;
 };
 
 static NTSTATUS hash_init( struct hash *hash )
@@ -277,22 +271,22 @@ static NTSTATUS hash_init( struct hash *hash )
     switch (hash->alg_id)
     {
     case ALG_ID_MD5:
-        CC_MD5_Init( &hash->u.md5_ctx );
+        CC_MD5_Init( (CC_MD5_CTX*)hash->ctx );
         break;
     case ALG_ID_SHA1:
-        CC_SHA1_Init( &hash->u.sha1_ctx );
+        CC_SHA1_Init( (CC_SHA1_CTX*)hash->ctx );
         break;
 
     case ALG_ID_SHA256:
-        CC_SHA256_Init( &hash->u.sha256_ctx );
+        CC_SHA256_Init( (CC_SHA256_CTX*)hash->ctx );
         break;
 
     case ALG_ID_SHA384:
-        CC_SHA384_Init( &hash->u.sha512_ctx );
+        CC_SHA384_Init( (CC_SHA512_CTX*)hash->ctx );
         break;
 
     case ALG_ID_SHA512:
-        CC_SHA512_Init( &hash->u.sha512_ctx );
+        CC_SHA512_Init( (CC_SHA512_CTX*)hash->ctx );
         break;
 
     default:
@@ -307,23 +301,23 @@ static NTSTATUS hash_update( struct hash *hash, UCHAR *input, ULONG size )
     switch (hash->alg_id)
     {
     case ALG_ID_MD5:
-        CC_MD5_Update( &hash->u.md5_ctx, input, size );
+        CC_MD5_Update( (CC_MD5_CTX*)hash->ctx, input, size );
         break;
 
     case ALG_ID_SHA1:
-        CC_SHA1_Update( &hash->u.sha1_ctx, input, size );
+        CC_SHA1_Update( (CC_SHA1_CTX*)hash->ctx, input, size );
         break;
 
     case ALG_ID_SHA256:
-        CC_SHA256_Update( &hash->u.sha256_ctx, input, size );
+        CC_SHA256_Update( (CC_SHA256_CTX*)hash->ctx, input, size );
         break;
 
     case ALG_ID_SHA384:
-        CC_SHA384_Update( &hash->u.sha512_ctx, input, size );
+        CC_SHA384_Update( (CC_SHA512_CTX*)hash->ctx, input, size );
         break;
 
     case ALG_ID_SHA512:
-        CC_SHA512_Update( &hash->u.sha512_ctx, input, size );
+        CC_SHA512_Update( (CC_SHA512_CTX*)hash->ctx, input, size );
         break;
 
     default:
@@ -338,23 +332,23 @@ static NTSTATUS hash_finish( struct hash *hash, UCHAR *output, ULONG size )
     switch (hash->alg_id)
     {
     case ALG_ID_MD5:
-        CC_MD5_Final( output, &hash->u.md5_ctx );
+        CC_MD5_Final( output, (CC_MD5_CTX*)hash->ctx );
         break;
 
     case ALG_ID_SHA1:
-        CC_SHA1_Final( output, &hash->u.sha1_ctx );
+        CC_SHA1_Final( output, (CC_SHA1_CTX*)hash->ctx );
         break;
 
     case ALG_ID_SHA256:
-        CC_SHA256_Final( output, &hash->u.sha256_ctx );
+        CC_SHA256_Final( output, (CC_SHA256_CTX*)hash->ctx );
         break;
 
     case ALG_ID_SHA384:
-        CC_SHA384_Final( output, &hash->u.sha512_ctx );
+        CC_SHA384_Final( output, (CC_SHA512_CTX*)hash->ctx );
         break;
 
     case ALG_ID_SHA512:
-        CC_SHA512_Final( output, &hash->u.sha512_ctx );
+        CC_SHA512_Final( output, (CC_SHA512_CTX*)hash->ctx );
         break;
 
     default:
@@ -603,10 +597,10 @@ NTSTATUS WINAPI BCryptCreateHash( BCRYPT_ALG_HANDLE algorithm, BCRYPT_HASH_HANDL
     if (!(hash = HeapAlloc( GetProcessHeap(), 0, sizeof(*hash) ))) return STATUS_NO_MEMORY;
 
     if (object) {
-        hash = (BCRYPT_HASH_HANDLE)object;
+        hash->ctx = object;
     }
     else {
-        FIXME("Cannot allocate memory for hash context");
+        FIXME("Cannot allocate hash context");
         return STATUS_NOT_IMPLEMENTED;
     }
     
@@ -629,7 +623,8 @@ NTSTATUS WINAPI BCryptDestroyHash( BCRYPT_HASH_HANDLE handle )
     TRACE( "%p\n", handle );
 
     if (!hash || hash->hdr.magic != MAGIC_HASH) return STATUS_INVALID_HANDLE;
-    //HeapFree( GetProcessHeap(), 1, hash ); //TODO
+    HeapFree( GetProcessHeap(), 1, hash );
+    //TODO: clear ctx if windows 7+
     return STATUS_SUCCESS;
 }
 
