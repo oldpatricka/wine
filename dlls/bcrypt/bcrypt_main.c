@@ -21,8 +21,9 @@
 #include "wine/port.h"
 
 #include <stdarg.h>
-#ifdef HAVE_COMMONCRYPTO_COMMONDIGEST_H
+#if defined(HAVE_COMMONCRYPTO_COMMONDIGEST_H) && defined(HAVE_COMMONCRYPTO_COMMONHMAC_H)
 #include <CommonCrypto/CommonDigest.h>
+#include <CommonCrypto/CommonHMAC.h>
 #elif defined(SONAME_LIBGNUTLS)
 #include <gnutls/gnutls.h>
 #include <gnutls/crypto.h>
@@ -196,6 +197,7 @@ struct algorithm
 {
     struct object hdr;
     enum alg_id   id;
+    BOOL hmac;
 };
 
 NTSTATUS WINAPI BCryptOpenAlgorithmProvider( BCRYPT_ALG_HANDLE *handle, LPCWSTR id, LPCWSTR implementation, DWORD flags )
@@ -203,12 +205,15 @@ NTSTATUS WINAPI BCryptOpenAlgorithmProvider( BCRYPT_ALG_HANDLE *handle, LPCWSTR 
     struct algorithm *alg;
     enum alg_id alg_id;
 
+    const DWORD supported_flags = BCRYPT_ALG_HANDLE_HMAC_FLAG;
+
     TRACE( "%p, %s, %s, %08x\n", handle, wine_dbgstr_w(id), wine_dbgstr_w(implementation), flags );
 
     if (!handle || !id) return STATUS_INVALID_PARAMETER;
-    if (flags)
+
+    if (flags & ~supported_flags) 
     {
-        FIXME( "unimplemented flags %08x\n", flags );
+        FIXME("unsupported flags %08x\n", flags & ~supported_flags);
         return STATUS_NOT_IMPLEMENTED;
     }
 
@@ -231,6 +236,7 @@ NTSTATUS WINAPI BCryptOpenAlgorithmProvider( BCRYPT_ALG_HANDLE *handle, LPCWSTR 
     if (!(alg = HeapAlloc( GetProcessHeap(), 0, sizeof(*alg) ))) return STATUS_NO_MEMORY;
     alg->hdr.magic = MAGIC_ALG;
     alg->id        = alg_id;
+    alg->hmac      = flags & BCRYPT_ALG_HANDLE_HMAC_FLAG;
 
     *handle = alg;
     return STATUS_SUCCESS;
@@ -263,6 +269,7 @@ struct hash
 {
     struct object hdr;
     enum alg_id   alg_id;
+    BOOL hmac;
     void * ctx;
 };
 
@@ -293,6 +300,40 @@ static NTSTATUS hash_init( struct hash *hash )
         ERR( "unhandled id %u\n", hash->alg_id );
         return STATUS_NOT_IMPLEMENTED;
     }
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS hmac_init( struct hash *hash, UCHAR *key, ULONG key_size )
+{
+    CCHmacAlgorithm cc_algorithm;
+    switch (hash->alg_id)
+    {
+    case ALG_ID_MD5:
+        cc_algorithm = kCCHmacAlgMD5;
+        break;
+    case ALG_ID_SHA1:
+        cc_algorithm = kCCHmacAlgSHA1;
+        break;
+
+    case ALG_ID_SHA256:
+        cc_algorithm = kCCHmacAlgSHA256;
+        break;
+
+    case ALG_ID_SHA384:
+        cc_algorithm = kCCHmacAlgSHA384;
+        break;
+
+    case ALG_ID_SHA512:
+        cc_algorithm = kCCHmacAlgSHA512;
+        break;
+
+    default:
+        ERR( "unhandled id %u\n", hash->alg_id );
+        return STATUS_NOT_IMPLEMENTED;
+    }
+
+    CCHmacInit( (CCHmacContext*)hash->ctx, cc_algorithm, key, key_size );
+
     return STATUS_SUCCESS;
 }
 
@@ -327,6 +368,13 @@ static NTSTATUS hash_update( struct hash *hash, UCHAR *input, ULONG size )
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS hmac_update( struct hash *hash, UCHAR *input, ULONG size )
+{
+    CCHmacUpdate( (CCHmacContext*)hash->ctx, input, size );
+
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS hash_finish( struct hash *hash, UCHAR *output, ULONG size )
 {
     switch (hash->alg_id)
@@ -357,11 +405,19 @@ static NTSTATUS hash_finish( struct hash *hash, UCHAR *output, ULONG size )
     }
     return STATUS_SUCCESS;
 }
+
+static NTSTATUS hmac_finish( struct hash *hash, UCHAR *output, ULONG size )
+{
+    CCHmacFinal( (CCHmacContext*)hash->ctx, output );
+
+    return STATUS_SUCCESS;
+}
 #elif defined(HAVE_GNUTLS_HASH)
 struct hash
 {
     struct object    hdr;
     enum alg_id      alg_id;
+    BOOL hmac;
     gnutls_hash_hd_t handle;
 };
 
@@ -416,6 +472,7 @@ static NTSTATUS hash_finish( struct hash *hash, UCHAR *output, ULONG size )
 struct hash
 {
     struct object hdr;
+    BOOL hmac;
     enum alg_id   alg_id;
 };
 
@@ -606,7 +663,20 @@ NTSTATUS WINAPI BCryptCreateHash( BCRYPT_ALG_HANDLE algorithm, BCRYPT_HASH_HANDL
     
     hash->hdr.magic = MAGIC_HASH;
     hash->alg_id    = alg->id;
-    if ((status = hash_init( hash )) != STATUS_SUCCESS)
+    hash->hmac      = alg->hmac;
+
+    if (alg->hmac)
+    {
+        FIXME("creating hmac\n");
+        status = hmac_init( hash, secret, secretlen );
+    }
+    else
+    {
+        FIXME("creating hash\n");
+        status = hash_init( hash );
+    }
+
+    if (status != STATUS_SUCCESS)
     {
         HeapFree( GetProcessHeap(), 0, hash );
         return status;
@@ -637,7 +707,16 @@ NTSTATUS WINAPI BCryptHashData( BCRYPT_HASH_HANDLE handle, UCHAR *input, ULONG s
     if (!hash || hash->hdr.magic != MAGIC_HASH) return STATUS_INVALID_HANDLE;
     if (!input) return STATUS_SUCCESS; // This is the (undocumented?) windows behavior
 
-    return hash_update( hash, input, size );
+    FIXME( "update with hmac? %d", hash->hmac);
+
+    if (hash->hmac)
+    {
+        return hmac_update( hash, input, size );
+    }
+    else
+    {
+        return hash_update( hash, input, size );
+    }
 }
 
 NTSTATUS WINAPI BCryptFinishHash( BCRYPT_HASH_HANDLE handle, UCHAR *output, ULONG size, ULONG flags )
@@ -649,7 +728,14 @@ NTSTATUS WINAPI BCryptFinishHash( BCRYPT_HASH_HANDLE handle, UCHAR *output, ULON
     if (!hash || hash->hdr.magic != MAGIC_HASH) return STATUS_INVALID_HANDLE;
     if (!output) return STATUS_INVALID_PARAMETER;
 
-    return hash_finish( hash, output, size );
+    if (hash->hmac)
+    {
+        return hmac_finish( hash, output, size );
+    }
+    else
+    {
+        return hash_finish( hash, output, size );
+    }
 }
 
 BOOL WINAPI DllMain( HINSTANCE hinst, DWORD reason, LPVOID reserved )

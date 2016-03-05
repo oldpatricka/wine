@@ -386,6 +386,7 @@ AC_CHECK_HEADERS(\
 	CL/cl.h \
 	Carbon/Carbon.h \
 	CommonCrypto/CommonDigest.h \
+    CommonCrypto/CommonHMAC.h \
 	CoreAudio/CoreAudio.h \
 	CoreServices/CoreServices.h \
 	DiskArbitration/DiskArbitration.h \
